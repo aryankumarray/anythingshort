@@ -1,0 +1,84 @@
+# AnythingShort — Cursor Project Rules
+
+## Stack Lock
+- Next.js 15, App Router ONLY. No pages/ directory, no getServerSideProps.
+- TypeScript strict mode is non-negotiable. tsconfig must have "strict": true,
+  "noUncheckedIndexedAccess": true, "noImplicitAny": true.
+- Prisma as the ORM. All DB access goes through a single shared Prisma client
+  instance (lib/prisma.ts), never `new PrismaClient()` inline anywhere else.
+- Tailwind + Shadcn UI for all components. No inline style objects unless
+  dynamically computed (e.g. chart colors).
+- Server Components by default. Only add "use client" when the component
+  needs interactivity, hooks, or browser APIs. Justify every "use client"
+  with a one-line comment above it.
+
+## Architecture Rules
+- Route Handlers (app/api/**/route.ts) contain NO business logic. They:
+  1. Parse/validate input (Zod)
+  2. Call a service function from lib/services/*
+  3. Return a typed NextResponse
+  All actual logic lives in lib/services/. This keeps logic testable and
+  route handlers thin.
+- Every external I/O call (Prisma, Redis, Auth) must be wrapped in try/catch
+  with typed error responses. Never let an unhandled promise rejection reach
+  the client as a raw 500 with a stack trace.
+- No hardcoded secrets, API keys, DB URLs, or magic tier limits anywhere in
+  source. Everything sensitive or configurable goes in `.env.local` and is
+  accessed through a validated `lib/env.ts` (use Zod to parse
+  process.env at boot, fail fast if a required var is missing).
+- Zero `any` types. If a third-party lib lacks types, write a minimal .d.ts
+  in types/.
+
+## File/Folder Conventions
+app/
+  (marketing)/           -> public landing pages
+  (dashboard)/            -> authenticated app, wrapped in dashboard layout
+  api/                     -> route handlers only, thin
+  [slug]/route.ts          -> the redirection engine (root-level catch route)
+lib/
+  services/                -> business logic (links.ts, analytics.ts, auth.ts)
+  redis.ts                 -> single Upstash client instance
+  prisma.ts                -> single Prisma client instance
+  ratelimit.ts              -> Upstash ratelimit instances
+  base62.ts                -> encode/decode utils
+  env.ts                    -> validated env access
+components/
+  ui/                       -> shadcn primitives (do not hand-edit generated ones)
+  dashboard/                -> feature components
+types/
+
+## Error Handling
+- Use a consistent ApiError class (lib/errors.ts) with `.status` and
+  `.message`. Route handlers catch it and map to NextResponse.json with the
+  right status code. Never leak Prisma/Postgres error internals to the client.
+
+## Naming
+- DB models: PascalCase singular (User, Link, Click).
+- DB columns: camelCase in Prisma schema (Prisma maps to snake_case in
+  Postgres via @map where needed).
+- API routes: kebab-case.
+
+## Performance Rules
+- Any operation on the hot redirect path ([slug]/route.ts) must be
+  benchmarked mentally against "does this block the redirect?" If yes, move
+  it to a fire-and-forget async call or a queue. The redirect response must
+  return before analytics writes complete.
+- Never do a Postgres read in the redirect path if a Redis cache hit is
+  possible. Cache-aside pattern: check Redis -> miss -> query Postgres ->
+  populate Redis -> return.
+
+## Testing/Verification Discipline
+- After generating any phase, run `npx tsc --noEmit` and fix all errors
+  before proceeding. Do not let type errors accumulate across phases.
+- Every new API route needs a matching entry in a manually maintained
+  API.md describing method, path, body shape, response shape, and auth
+  requirement.
+
+## What NOT to do
+- Do not install a UI kit other than Shadcn.
+- Do not use client-side fetching (SWR/React Query) for data that can be
+  fetched server-side in a Server Component, unless it needs live polling
+  (e.g. analytics auto-refresh).
+- Do not write raw SQL unless Prisma genuinely cannot express the query
+  (e.g. complex aggregation) — and if you do, isolate it in
+  lib/services/rawQueries.ts with a comment explaining why.
